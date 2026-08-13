@@ -39,8 +39,40 @@ uses no CPU. Background networking, component updates, the crash reporter,
 translation, autofill and media routing are all switched off at startup, and
 renderers are capped at one since only one backend is ever on screen.
 
-**External links open in your real browser** rather than a second webview this
-process would have to keep alive.
+**Links open in their own frame window.** Anything the page opens as a new
+page — docs, a model card — gets a DiffusionFrame window rather than replacing
+what you were looking at. Those windows share the parent's browser process, so
+a second window costs a renderer rather than a whole browser.
+
+## The window menu
+
+Right-click the title bar (or press `Alt+Space`) for the system menu. Below the
+usual Move/Size/Close entries:
+
+| Item | |
+| --- | --- |
+| **Refresh page** | Reloads. On the main window it re-probes the backend first, so refreshing after a shutdown lands on the placeholder rather than a Chromium error page. |
+| **Enable/Disable colour management** | Whether the webview converts page colours into your display's ICC profile. |
+| **Enable/Disable hardware acceleration** | Same toggle as `Ctrl+Shift+G`. |
+
+Both toggles restart the app, and their menu labels say so. This is not a
+shortcut worth apologising for — it is the only way it can work. WebView2 reads
+its command line exactly once, when the browser environment is created, and
+neither GPU use nor colour conversion is adjustable afterwards through any
+runtime API. The restart carries across your window position and size, zoom
+level, active backend and any command-line address, so in practice the window
+blinks and comes back where it was.
+
+### Colour management
+
+Chromium's default is to convert page colours into your display's ICC profile.
+On a wide-gamut monitor that makes a generated image look more saturated inside
+the frame than in an unmanaged viewer — the pixels the backend produced are not
+the pixels you are seeing. Turning colour management off pins the profile to
+sRGB, which makes the conversion a no-op and puts the original values on screen.
+
+On an ordinary sRGB monitor the two settings look identical. Leave it on unless
+you are colour-matching against another application.
 
 ## Requirements
 
@@ -116,6 +148,7 @@ exit. `Ctrl+Shift+O` opens the folder.
 
 ```ini
 hardware_acceleration = true
+colour_management = true
 low_priority = true
 idle_throttle = true
 
@@ -147,6 +180,20 @@ saved workflows, logins or UI settings. One consequence: two copies of
 DiffusionFrame running at once with *different* acceleration settings will
 conflict over that folder, and the second one will report that it can't start.
 Two copies with the same setting are fine.
+
+## The icon
+
+The app icon is the **iframe** glyph from [Material Symbols][symbols]. It is not
+hand-traced: `tools/make_icon.py` fetches the upstream SVG, rasterizes it with a
+small standard-library-only renderer, and writes both `assets/icon.ico` (for the
+executable) and `assets/icon-32.rgba` (for the window, so the binary carries no
+image decoder). Re-run it to regenerate:
+
+```
+python3 tools/make_icon.py
+```
+
+[symbols]: https://fonts.google.com/icons
 
 ## Development
 

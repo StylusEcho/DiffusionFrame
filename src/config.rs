@@ -37,6 +37,9 @@ pub struct Config {
     /// When false the webview is started with the GPU disabled, leaving all
     /// video memory to the diffusion backend.
     pub hardware_acceleration: bool,
+    /// When false the webview stops converting page colours into the
+    /// display's ICC profile, so images reach the screen unaltered.
+    pub colour_management: bool,
     /// Run the frame below normal scheduler priority so it yields to the
     /// backend under load.
     pub low_priority: bool,
@@ -55,6 +58,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             hardware_acceleration: true,
+            colour_management: true,
             low_priority: true,
             idle_throttle: true,
             zoom: 1.0,
@@ -145,6 +149,7 @@ impl Config {
 
             match key {
                 "hardware_acceleration" => config.hardware_acceleration = parse_bool(value, true),
+                "colour_management" => config.colour_management = parse_bool(value, true),
                 "low_priority" => config.low_priority = parse_bool(value, true),
                 "idle_throttle" => config.idle_throttle = parse_bool(value, true),
                 "zoom" => config.zoom = value.parse().unwrap_or(1.0),
@@ -206,6 +211,13 @@ impl Config {
         out.push_str(&format!(
             "hardware_acceleration = {}\n\n",
             self.hardware_acceleration
+        ));
+
+        out.push_str("# Convert page colours into the display's ICC profile. Set false on a\n");
+        out.push_str("# wide-gamut monitor to see generated images with their original values.\n");
+        out.push_str(&format!(
+            "colour_management = {}\n\n",
+            self.colour_management
         ));
 
         out.push_str("# Run below normal scheduler priority so sampling never waits on the UI.\n");
@@ -271,6 +283,7 @@ mod tests {
     fn settings_survive_a_save_load_round_trip() {
         let original = Config {
             hardware_acceleration: false,
+            colour_management: false,
             low_priority: false,
             idle_throttle: false,
             zoom: 1.25,
@@ -288,6 +301,7 @@ mod tests {
         let reloaded = Config::parse(&original.serialize());
 
         assert!(!reloaded.hardware_acceleration);
+        assert!(!reloaded.colour_management);
         assert!(!reloaded.low_priority);
         assert!(!reloaded.idle_throttle);
         assert_eq!(reloaded.zoom, 1.25);
@@ -325,6 +339,7 @@ mod tests {
         // Bad values fall back rather than aborting startup, and an out-of-range
         // `active` must not outlive the target list it indexes.
         assert!(config.hardware_acceleration);
+        assert!(config.colour_management);
         assert_eq!(config.zoom, 1.0);
         assert_eq!(config.active, 0);
         assert_eq!(config.window.width, 320);

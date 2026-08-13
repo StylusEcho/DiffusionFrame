@@ -7,6 +7,7 @@
 pub mod browser_args;
 pub mod cli;
 pub mod config;
+pub mod menu;
 pub mod net;
 pub mod platform;
 pub mod ui;

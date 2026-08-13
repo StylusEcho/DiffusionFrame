@@ -69,12 +69,6 @@ mod imp {
     pub fn reveal_in_file_manager(path: &Path) {
         let _ = std::process::Command::new("explorer.exe").arg(path).spawn();
     }
-
-    pub fn open_external(url: &str) {
-        // `explorer.exe <url>` hands the URL to the default browser without
-        // the shell-injection surface of `cmd /c start`.
-        let _ = std::process::Command::new("explorer.exe").arg(url).spawn();
-    }
 }
 
 #[cfg(not(windows))]
@@ -96,13 +90,9 @@ mod imp {
     pub fn reveal_in_file_manager(path: &Path) {
         let _ = std::process::Command::new("xdg-open").arg(path).spawn();
     }
-
-    pub fn open_external(url: &str) {
-        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
-    }
 }
 
-pub use imp::{open_external, set_low_priority, show_error, show_info, wait_for_process_exit};
+pub use imp::{set_low_priority, show_error, show_info, wait_for_process_exit};
 
 pub fn reveal_in_file_manager(path: &Path) {
     imp::reveal_in_file_manager(path);
