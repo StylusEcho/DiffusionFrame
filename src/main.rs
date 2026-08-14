@@ -36,7 +36,8 @@ const ICON_SIZE: u32 = 32;
 /// and the new-window handler send back to the event loop.
 #[derive(Debug)]
 enum UserEvent {
-    Ipc(String),
+    /// Carries the window that sent it, since every window has this bridge.
+    Ipc(usize, String),
     Menu(MenuCommand, isize),
     NewWindow(String),
 }
@@ -44,20 +45,36 @@ enum UserEvent {
 /// A window and the webview filling it. The main window and every window
 /// opened from a link are the same shape, so lookups can treat them alike.
 struct FrameWindow {
+    /// Our own handle, so IPC from a window can be routed back to it. The
+    /// main window is always 0.
+    id: usize,
     window: Window,
     webview: WebView,
 }
 
+const MAIN_WINDOW: usize = 0;
+
 impl FrameWindow {
-    #[cfg(windows)]
     fn owns(&self, hwnd: isize) -> bool {
-        self.window.hwnd() == hwnd
+        hwnd_of(&self.window) == hwnd
     }
 
-    #[cfg(not(windows))]
-    fn owns(&self, _hwnd: isize) -> bool {
-        false
+    /// Adopt the icon the page reported, replacing DiffusionFrame's own.
+    fn set_icon(&self, pixels: Vec<u8>) {
+        if let Ok(icon) = Icon::from_rgba(pixels, ui::ICON_SIZE, ui::ICON_SIZE) {
+            self.window.set_window_icon(Some(icon));
+        }
     }
+}
+
+#[cfg(windows)]
+fn hwnd_of(window: &Window) -> isize {
+    window.hwnd()
+}
+
+#[cfg(not(windows))]
+fn hwnd_of(_window: &Window) -> isize {
+    0
 }
 
 fn main() {
@@ -126,12 +143,10 @@ fn run(args: cli::Args) -> Result<(), Box<dyn Error>> {
     let target = config.active_target().clone();
     let reachable = net::is_listening(&target.url);
 
-    let ipc_proxy = proxy.clone();
-    let mut builder = webview_builder(&mut web_context, &config, &proxy)
+    let mut builder = webview_builder(&mut web_context, &config, &proxy, MAIN_WINDOW)
+        // Only the main window binds shortcuts: they act on the backend and
+        // the config, neither of which a link window represents.
         .with_initialization_script_for_main_only(ui::shortcuts_script(), true)
-        .with_ipc_handler(move |request| {
-            let _ = ipc_proxy.send_event(UserEvent::Ipc(request.into_body()));
-        })
         .with_devtools(cfg!(debug_assertions));
 
     builder = if reachable {
@@ -145,6 +160,7 @@ fn run(args: cli::Args) -> Result<(), Box<dyn Error>> {
     };
 
     let main = FrameWindow {
+        id: MAIN_WINDOW,
         webview: builder.build(&window)?,
         window,
     };
@@ -152,9 +168,10 @@ fn run(args: cli::Args) -> Result<(), Box<dyn Error>> {
     if (config.zoom - 1.0).abs() > f64::EPSILON {
         let _ = main.webview.zoom(config.zoom);
     }
-    install_menu(&main.window, &config);
+    decorate(&main.window, &config);
 
     let mut children: Vec<FrameWindow> = Vec::new();
+    let mut next_window_id = MAIN_WINDOW + 1;
     let mut minimized = false;
 
     event_loop.run(move |event, target, control_flow| {
@@ -193,8 +210,8 @@ fn run(args: cli::Args) -> Result<(), Box<dyn Error>> {
                 }
             }
 
-            Event::UserEvent(UserEvent::Ipc(message)) => {
-                handle_message(&message, &main, &mut config);
+            Event::UserEvent(UserEvent::Ipc(id, message)) => {
+                handle_message(&message, id, &main, &children, &mut config);
             }
 
             Event::UserEvent(UserEvent::Menu(command, hwnd)) => {
@@ -202,7 +219,9 @@ fn run(args: cli::Args) -> Result<(), Box<dyn Error>> {
             }
 
             Event::UserEvent(UserEvent::NewWindow(url)) => {
-                match open_child(target, &mut web_context, &proxy, &config, &url) {
+                let id = next_window_id;
+                next_window_id += 1;
+                match open_child(target, &mut web_context, &proxy, &config, &url, id) {
                     Ok(child) => children.push(child),
                     Err(error) => {
                         platform::show_error(&format!("Could not open {url}.\n\n{error}"))
@@ -221,11 +240,19 @@ fn webview_builder<'a>(
     web_context: &'a mut WebContext,
     config: &Config,
     proxy: &EventLoopProxy<UserEvent>,
+    id: usize,
 ) -> WebViewBuilder<'a> {
     let new_window_proxy = proxy.clone();
+    let ipc_proxy = proxy.clone();
 
     #[allow(unused_mut)]
     let mut builder = WebViewBuilder::new_with_web_context(web_context)
+        .with_ipc_handler(move |request| {
+            let _ = ipc_proxy.send_event(UserEvent::Ipc(id, request.into_body()));
+        })
+        // Every window adopts its page's favicon, so a link window is
+        // recognisable in the taskbar rather than being a second copy of us.
+        .with_initialization_script_for_main_only(ui::favicon_script(), true)
         // Links that ask for a new page get their own frame window rather
         // than replacing what is on screen.
         .with_new_window_req_handler(move |url, _features| {
@@ -237,6 +264,11 @@ fn webview_builder<'a>(
         // do not flash white.
         .with_background_color((22, 24, 29, 255));
 
+    // Only worth watching the page's colours when the title bar follows them.
+    if config.titlebar.follows_page() {
+        builder = builder.with_initialization_script_for_main_only(ui::background_script(), true);
+    }
+
     // Both toggles live here: WebView2 reads its command line once, when the
     // browser environment is created.
     #[cfg(windows)]
@@ -246,8 +278,6 @@ fn webview_builder<'a>(
             config.colour_management,
         ));
     }
-    #[cfg(not(windows))]
-    let _ = config;
 
     builder
 }
@@ -260,6 +290,7 @@ fn open_child(
     proxy: &EventLoopProxy<UserEvent>,
     config: &Config,
     url: &str,
+    id: usize,
 ) -> Result<FrameWindow, Box<dyn Error>> {
     let window = WindowBuilder::new()
         .with_title(child_title(url))
@@ -268,15 +299,52 @@ fn open_child(
         .with_min_inner_size(PhysicalSize::new(480, 360))
         .build(target)?;
 
-    let webview = webview_builder(web_context, config, proxy)
+    let webview = webview_builder(web_context, config, proxy, id)
         .with_url(url)
         .build(&window)?;
 
-    install_menu(&window, config);
-    Ok(FrameWindow { window, webview })
+    decorate(&window, config);
+    Ok(FrameWindow {
+        id,
+        window,
+        webview,
+    })
 }
 
-fn handle_message(message: &str, main: &FrameWindow, config: &mut Config) {
+fn handle_message(
+    message: &str,
+    id: usize,
+    main: &FrameWindow,
+    children: &[FrameWindow],
+    config: &mut Config,
+) {
+    // Reports about a page belong to the window that sent them; link windows
+    // send these too.
+    if let Some(payload) = message.strip_prefix("icon:") {
+        if let Some(pixels) = ui::decode_icon(payload) {
+            if let Some(frame) = find(main, children, id) {
+                frame.set_icon(pixels);
+            }
+        }
+        return;
+    }
+    if let Some(payload) = message.strip_prefix("background:") {
+        if config.titlebar.follows_page() {
+            if let (Some(colour), Some(frame)) =
+                (ui::parse_background(payload), find(main, children, id))
+            {
+                platform::set_titlebar(hwnd_of(&frame.window), Some(colour));
+            }
+        }
+        return;
+    }
+
+    // Everything below acts on the backend or the config, and only the main
+    // window carries the shortcut bridge that sends it.
+    if id != MAIN_WINDOW {
+        return;
+    }
+
     let window = &main.window;
     let webview = &main.webview;
 
@@ -419,17 +487,24 @@ fn set_idle(webview: &WebView, idle: bool) {
     }
 }
 
-#[cfg(windows)]
-fn install_menu(window: &Window, config: &Config) {
-    menu::install(
-        window.hwnd(),
-        config.colour_management,
-        config.hardware_acceleration,
-    );
+fn find<'a>(
+    main: &'a FrameWindow,
+    children: &'a [FrameWindow],
+    id: usize,
+) -> Option<&'a FrameWindow> {
+    std::iter::once(main)
+        .chain(children)
+        .find(|frame| frame.id == id)
 }
 
-#[cfg(not(windows))]
-fn install_menu(_window: &Window, _config: &Config) {}
+/// Give a freshly built window its system menu and title bar colour.
+fn decorate(window: &Window, config: &Config) {
+    let hwnd = hwnd_of(window);
+    menu::install(hwnd, config.colour_management, config.hardware_acceleration);
+    // Page-following windows start here too and are repainted once the page
+    // reports, so the caption never flashes the system colour first.
+    platform::set_titlebar(hwnd, config.titlebar.initial_colour());
+}
 
 fn app_icon() -> Option<Icon> {
     Icon::from_rgba(ICON_RGBA.to_vec(), ICON_SIZE, ICON_SIZE).ok()

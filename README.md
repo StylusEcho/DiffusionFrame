@@ -74,6 +74,32 @@ sRGB, which makes the conversion a no-op and puts the original values on screen.
 On an ordinary sRGB monitor the two settings look identical. Leave it on unless
 you are colour-matching against another application.
 
+## Title bar and icon
+
+**The window icon follows the page.** Each window adopts the favicon of
+whatever it is showing, so the ComfyUI window carries ComfyUI's icon and a link
+window carries the linked site's — handy once several are open in the taskbar.
+DiffusionFrame's own icon is the fallback when a page has none.
+
+No image decoder was added for this. The page draws its own favicon onto a
+canvas and hands back raw pixels, so whatever format the site uses — `.ico`,
+PNG, SVG — is decoded by the browser engine that is already running. A
+cross-origin favicon without CORS headers taints the canvas and is skipped,
+which leaves the default icon in place.
+
+**The title bar is black by default**, matching the dark UIs these backends
+ship with. Set `titlebar` to change it:
+
+| `titlebar` | |
+| --- | --- |
+| `black` (default) | Black caption, light title text. |
+| `page` | Follows the background colour of the page on screen, with the title text flipped to stay legible. Tracks in-page theme switches, not just page loads. |
+| `system` | Whatever Windows would do on its own. |
+
+Painting the caption needs Windows 11 (build 22000). On Windows 10 those calls
+fail harmlessly and only the dark-mode flag applies, which still gives you a
+dark caption — just not an exact colour match.
+
 ## Requirements
 
 Windows 10 or 11 with the WebView2 runtime. Windows 11 ships with it; on
@@ -152,6 +178,8 @@ colour_management = true
 low_priority = true
 idle_throttle = true
 
+titlebar = black
+
 zoom = 1.0
 active = 0
 
@@ -183,8 +211,9 @@ Two copies with the same setting are fine.
 
 ## The icon
 
-The app icon is the **iframe** glyph from [Material Symbols][symbols]. It is not
-hand-traced: `tools/make_icon.py` fetches the upstream SVG, rasterizes it with a
+DiffusionFrame's own icon — the executable's icon in Explorer, and the fallback
+for any window whose page has no favicon — is the **iframe** glyph from
+[Material Symbols][symbols]. It is not hand-traced: `tools/make_icon.py` fetches the upstream SVG, rasterizes it with a
 small standard-library-only renderer, and writes both `assets/icon.ico` (for the
 executable) and `assets/icon-32.rgba` (for the window, so the binary carries no
 image decoder). Re-run it to regenerate:

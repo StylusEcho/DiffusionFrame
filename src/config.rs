@@ -13,6 +13,52 @@ pub struct Target {
     pub url: String,
 }
 
+/// What colour the window's title bar should be painted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Titlebar {
+    /// Black, matching the dark UIs these backends ship with.
+    #[default]
+    Black,
+    /// Follow the background colour of whatever page is on screen.
+    Page,
+    /// Leave it to Windows.
+    System,
+}
+
+impl Titlebar {
+    fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "black" => Some(Titlebar::Black),
+            "page" => Some(Titlebar::Page),
+            "system" => Some(Titlebar::System),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Titlebar::Black => "black",
+            Titlebar::Page => "page",
+            Titlebar::System => "system",
+        }
+    }
+
+    /// The colour to paint before the page has said anything, if any.
+    pub fn initial_colour(self) -> Option<(u8, u8, u8)> {
+        match self {
+            // Page-following starts black too, so the caption never flashes
+            // the system colour while the page is still loading.
+            Titlebar::Black | Titlebar::Page => Some((0, 0, 0)),
+            Titlebar::System => None,
+        }
+    }
+
+    /// Whether the page needs to report its background colour.
+    pub fn follows_page(self) -> bool {
+        self == Titlebar::Page
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WindowState {
     pub width: u32,
@@ -45,6 +91,7 @@ pub struct Config {
     pub low_priority: bool,
     /// Release renderer memory and stop compositing while minimized.
     pub idle_throttle: bool,
+    pub titlebar: Titlebar,
     pub zoom: f64,
     pub active: usize,
     pub window: WindowState,
@@ -61,6 +108,7 @@ impl Default for Config {
             colour_management: true,
             low_priority: true,
             idle_throttle: true,
+            titlebar: Titlebar::default(),
             zoom: 1.0,
             active: 0,
             window: WindowState::default(),
@@ -152,6 +200,7 @@ impl Config {
                 "colour_management" => config.colour_management = parse_bool(value, true),
                 "low_priority" => config.low_priority = parse_bool(value, true),
                 "idle_throttle" => config.idle_throttle = parse_bool(value, true),
+                "titlebar" => config.titlebar = Titlebar::parse(value).unwrap_or_default(),
                 "zoom" => config.zoom = value.parse().unwrap_or(1.0),
                 "active" => config.active = value.parse().unwrap_or(0),
                 "window_width" => config.window.width = value.parse().unwrap_or(1440),
@@ -226,6 +275,9 @@ impl Config {
         out.push_str("# Release renderer memory and stop compositing while minimized.\n");
         out.push_str(&format!("idle_throttle = {}\n\n", self.idle_throttle));
 
+        out.push_str("# Title bar colour: black, page (follow the page background), or system.\n");
+        out.push_str(&format!("titlebar = {}\n\n", self.titlebar.as_str()));
+
         out.push_str(&format!("zoom = {}\n", self.zoom));
         out.push_str(&format!("active = {}\n\n", self.active));
 
@@ -286,6 +338,7 @@ mod tests {
             colour_management: false,
             low_priority: false,
             idle_throttle: false,
+            titlebar: Titlebar::Page,
             zoom: 1.25,
             active: 2,
             window: WindowState {
@@ -304,6 +357,7 @@ mod tests {
         assert!(!reloaded.colour_management);
         assert!(!reloaded.low_priority);
         assert!(!reloaded.idle_throttle);
+        assert_eq!(reloaded.titlebar, Titlebar::Page);
         assert_eq!(reloaded.zoom, 1.25);
         assert_eq!(reloaded.active, 2);
         assert_eq!(reloaded.window, original.window);
@@ -344,6 +398,28 @@ mod tests {
         assert_eq!(config.active, 0);
         assert_eq!(config.window.width, 320);
         assert_eq!(config.targets, default_targets());
+    }
+
+    #[test]
+    fn titlebar_values_parse_and_unknown_ones_fall_back_to_black() {
+        assert_eq!(Config::parse("titlebar = page").titlebar, Titlebar::Page);
+        assert_eq!(
+            Config::parse("titlebar = SYSTEM").titlebar,
+            Titlebar::System
+        );
+        assert_eq!(Config::parse("titlebar = mauve").titlebar, Titlebar::Black);
+        assert_eq!(Config::default().titlebar, Titlebar::Black);
+    }
+
+    #[test]
+    fn only_page_following_needs_the_background_script() {
+        assert!(Titlebar::Page.follows_page());
+        assert!(!Titlebar::Black.follows_page());
+        assert!(!Titlebar::System.follows_page());
+        // Black and page both start black, so the caption never flashes.
+        assert_eq!(Titlebar::Page.initial_colour(), Some((0, 0, 0)));
+        assert_eq!(Titlebar::Black.initial_colour(), Some((0, 0, 0)));
+        assert_eq!(Titlebar::System.initial_colour(), None);
     }
 
     #[test]
