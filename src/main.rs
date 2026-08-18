@@ -40,6 +40,9 @@ enum UserEvent {
     Ipc(usize, String),
     Menu(MenuCommand, isize),
     NewWindow(String),
+    /// A page entered or left element fullscreen (a video's own fullscreen
+    /// button, for instance), carrying the window it happened in.
+    Fullscreen(usize, bool),
 }
 
 /// A window and the webview filling it. The main window and every window
@@ -169,6 +172,7 @@ fn run(args: cli::Args) -> Result<(), Box<dyn Error>> {
         let _ = main.webview.zoom(config.zoom);
     }
     decorate(&main.window, &config);
+    watch_fullscreen(&main.webview, MAIN_WINDOW, &proxy);
 
     let mut children: Vec<FrameWindow> = Vec::new();
     let mut next_window_id = MAIN_WINDOW + 1;
@@ -218,6 +222,17 @@ fn run(args: cli::Args) -> Result<(), Box<dyn Error>> {
                 handle_menu(command, hwnd, &main, &children, &mut config);
             }
 
+            // WebView2 only expands an in-page fullscreen request (a video's
+            // own fullscreen button, `Element.requestFullscreen()`) to fill
+            // our window's bounds, not the monitor -- the same borderless
+            // resize our own Ctrl+Shift+F uses gets it the rest of the way.
+            Event::UserEvent(UserEvent::Fullscreen(id, entered)) => {
+                if let Some(frame) = find(&main, &children, id) {
+                    let fullscreen = entered.then_some(tao::window::Fullscreen::Borderless(None));
+                    frame.window.set_fullscreen(fullscreen);
+                }
+            }
+
             Event::UserEvent(UserEvent::NewWindow(url)) => {
                 let id = next_window_id;
                 next_window_id += 1;
@@ -253,6 +268,9 @@ fn webview_builder<'a>(
         // Every window adopts its page's favicon, so a link window is
         // recognisable in the taskbar rather than being a second copy of us.
         .with_initialization_script_for_main_only(ui::favicon_script(), true)
+        // The window title always follows the page, so it says what is
+        // actually on screen rather than lagging on the backend's name.
+        .with_initialization_script_for_main_only(ui::title_script(), true)
         // Links that ask for a new page get their own frame window rather
         // than replacing what is on screen.
         .with_new_window_req_handler(move |url, _features| {
@@ -304,12 +322,44 @@ fn open_child(
         .build(&window)?;
 
     decorate(&window, config);
+    watch_fullscreen(&webview, id, proxy);
     Ok(FrameWindow {
         id,
         window,
         webview,
     })
 }
+
+/// Make the page's own fullscreen requests (a video's fullscreen button)
+/// resize the OS window, not just the content area.
+#[cfg(windows)]
+fn watch_fullscreen(webview: &WebView, id: usize, proxy: &EventLoopProxy<UserEvent>) {
+    use webview2_com::ContainsFullScreenElementChangedEventHandler;
+    use wry::WebViewExtWindows;
+
+    let proxy = proxy.clone();
+    let raw = webview.webview();
+    let handler =
+        ContainsFullScreenElementChangedEventHandler::create(Box::new(move |sender, _args| {
+            let Some(sender) = sender else {
+                return Ok(());
+            };
+            let mut contains = windows_core::BOOL(0);
+            unsafe {
+                sender.ContainsFullScreenElement(&mut contains)?;
+            }
+            let _ = proxy.send_event(UserEvent::Fullscreen(id, contains.as_bool()));
+            Ok(())
+        }));
+
+    let mut token: i64 = 0;
+    unsafe {
+        let _ = raw.add_ContainsFullScreenElementChanged(&handler, &mut token);
+    }
+}
+
+#[cfg(not(windows))]
+fn watch_fullscreen(_webview: &WebView, _id: usize, _proxy: &EventLoopProxy<UserEvent>) {}
 
 fn handle_message(
     message: &str,
@@ -335,6 +385,16 @@ fn handle_message(
             {
                 platform::set_titlebar(hwnd_of(&frame.window), Some(colour));
             }
+        }
+        return;
+    }
+    if let Some(payload) = message.strip_prefix("title:") {
+        if let (Some(page_title), Some(frame)) =
+            (ui::parse_title(payload), find(main, children, id))
+        {
+            frame
+                .window
+                .set_title(&frame_title(&page_title, frame.id, config));
         }
         return;
     }
@@ -403,6 +463,8 @@ fn handle_message(
                     config.active = index;
                     window.set_title(&window_title(config));
                     show_target(webview, config);
+                    // The freshly loaded page will announce its own title
+                    // shortly; this is only the placeholder until it does.
                     config.save();
                 }
             }
@@ -433,6 +495,17 @@ fn handle_menu(
             } else {
                 let _ = frame.webview.reload();
             }
+        }
+
+        // Cache and site data are shared by every window through the common
+        // WebContext, so clearing from the main webview is enough regardless
+        // of which window's menu was used. The restart isn't strictly needed
+        // to see the effect, but a stale service worker or WASM module can
+        // otherwise stay resident in the renderer that served it -- catching
+        // both is the point of this specific button.
+        MenuCommand::ClearCacheAndRestart => {
+            let _ = main.webview.clear_all_browsing_data();
+            restart(&main.window, config);
         }
 
         // Both toggles are command-line options to the WebView2 environment,
@@ -529,23 +602,47 @@ fn capture_window_state(window: &Window, config: &mut Config) {
     }
 }
 
+/// Used only until the page announces its own title -- at startup, and
+/// briefly after switching backends.
 fn window_title(config: &Config) -> String {
-    let mut title = format!("{} — DiffusionFrame", config.active_target().name);
-    if !config.hardware_acceleration {
-        title.push_str("  ·  GPU off");
-    }
-    if !config.colour_management {
-        title.push_str("  ·  unmanaged colour");
-    }
-    title
+    format!(
+        "{} — DiffusionFrame{}",
+        config.active_target().name,
+        status_suffix(MAIN_WINDOW, config)
+    )
 }
 
-/// Link windows are titled by where they went, since they show arbitrary pages.
+/// Used only until a link window's page announces its own title.
 fn child_title(url: &str) -> String {
-    match net::host_and_port(url) {
-        Some((host, port)) => format!("{host}:{port} — DiffusionFrame"),
-        None => format!("{url} — DiffusionFrame"),
+    let placeholder = match net::host_and_port(url) {
+        Some((host, port)) => format!("{host}:{port}"),
+        None => url.to_string(),
+    };
+    format!("{placeholder} — DiffusionFrame")
+}
+
+/// The window caption once the page has reported its title: the title itself,
+/// suffixed with DiffusionFrame and, on the main window, the two restart-only
+/// toggles' status.
+fn frame_title(page_title: &str, id: usize, config: &Config) -> String {
+    format!("{page_title} — DiffusionFrame{}", status_suffix(id, config))
+}
+
+/// Only the main window carries GPU/colour status -- a link window shows an
+/// arbitrary third-party page and shares the same settings, so repeating the
+/// indicator there would just be clutter.
+fn status_suffix(id: usize, config: &Config) -> String {
+    if id != MAIN_WINDOW {
+        return String::new();
     }
+    let mut suffix = String::new();
+    if !config.hardware_acceleration {
+        suffix.push_str("  ·  GPU off");
+    }
+    if !config.colour_management {
+        suffix.push_str("  ·  unmanaged colour");
+    }
+    suffix
 }
 
 /// Guard against restoring a window onto a monitor that no longer exists.

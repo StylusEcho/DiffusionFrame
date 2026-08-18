@@ -63,6 +63,75 @@ pub fn shortcuts_script() -> String {
     .to_string()
 }
 
+/// Longest page title DiffusionFrame will put in a window's title bar.
+/// Some pages announce enormous or spammy titles; a native window title has
+/// no scroll or wrap, so an unbounded one would just make the caption
+/// useless.
+const MAX_TITLE_LEN: usize = 200;
+
+/// Reports the page's title, so the window caption can track it.
+///
+/// WebView2 has its own `DocumentTitleChanged` native event, but this stays
+/// with the pattern already used for the favicon and background: one small
+/// script, no separate COM callback per window to wire up and tear down.
+pub fn title_script() -> String {
+    r#"
+(function () {
+  if (window.__diffusionframeTitle) return;
+  window.__diffusionframeTitle = true;
+
+  var last = null;
+  var report = function () {
+    var title = document.title;
+    if (title && title !== last) {
+      last = title;
+      try { window.ipc.postMessage('title:' + title); } catch (e) {}
+    }
+  };
+
+  var pending = null;
+  var schedule = function () {
+    if (pending) clearTimeout(pending);
+    pending = setTimeout(report, 150);
+  };
+
+  var watch = function () {
+    report();
+    // document.title's setter updates the <title> element's text, so
+    // observing it here also catches SPA navigation and progress-percentage
+    // titles without polling.
+    new MutationObserver(schedule).observe(document.head, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+    });
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', watch);
+  } else {
+    watch();
+  }
+})();
+"#
+    .to_string()
+}
+
+/// Trim and length-cap the title sent by [`title_script`].
+///
+/// Returns `None` for an empty title, so a page that briefly clears
+/// `document.title` during a transition does not blank the caption.
+pub fn parse_title(payload: &str) -> Option<String> {
+    let title = payload.trim();
+    if title.is_empty() {
+        return None;
+    }
+    Some(match title.char_indices().nth(MAX_TITLE_LEN) {
+        Some((cut, _)) => format!("{}…", &title[..cut]),
+        None => title.to_string(),
+    })
+}
+
 /// Reports the page's favicon as raw pixels.
 ///
 /// The canvas does the decoding, so DiffusionFrame handles whatever format the
@@ -350,6 +419,35 @@ mod tests {
             name: name.to_string(),
             url: url.to_string(),
         }
+    }
+
+    #[test]
+    fn titles_pass_through_after_trimming() {
+        assert_eq!(parse_title("  ComfyUI  "), Some("ComfyUI".to_string()));
+        assert_eq!(parse_title("67% ComfyUI"), Some("67% ComfyUI".to_string()));
+    }
+
+    #[test]
+    fn a_blank_title_is_ignored_rather_than_blanking_the_caption() {
+        assert_eq!(parse_title(""), None);
+        assert_eq!(parse_title("   "), None);
+    }
+
+    #[test]
+    fn an_overlong_title_is_capped_rather_than_left_unbounded() {
+        let long = "x".repeat(MAX_TITLE_LEN + 50);
+        let result = parse_title(&long).unwrap();
+        assert_eq!(result.chars().count(), MAX_TITLE_LEN + 1); // +1 for the ellipsis
+        assert!(result.ends_with('…'));
+    }
+
+    #[test]
+    fn capping_a_title_does_not_split_a_multibyte_character() {
+        // A title made entirely of 3-byte characters, one longer than the cap:
+        // slicing by raw byte index instead of char index would panic here.
+        let long = "文".repeat(MAX_TITLE_LEN + 5);
+        let result = parse_title(&long).unwrap();
+        assert!(result.ends_with('…'));
     }
 
     /// Mirrors what `btoa` produces in the injected script.

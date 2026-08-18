@@ -295,7 +295,9 @@ version = "0.1.0"
 dependencies = [
  "embed-resource",
  "tao",
+ "webview2-com",
  "windows 0.62.2",
+ "windows-core 0.61.2",
  "wry",
 ]
 

@@ -52,10 +52,11 @@ usual Move/Size/Close entries:
 | Item | |
 | --- | --- |
 | **Refresh page** | Reloads. On the main window it re-probes the backend first, so refreshing after a shutdown lands on the placeholder rather than a Chromium error page. |
-| **Enable/Disable colour management** | Whether the webview converts page colours into your display's ICC profile. |
-| **Enable/Disable hardware acceleration** | Same toggle as `Ctrl+Shift+G`. |
+| **Clear cache and restart** | Wipes the webview's cache, cookies, storage and service workers, then restarts. Worth reaching for if a custom node's UI extension isn't showing up or is behaving like an old version of itself -- that is usually a stale cached script, not a real config problem. |
+| **Enable/Disable Colour Management** | Whether the webview converts page colours into your display's ICC profile. |
+| **Enable/Disable Hardware Acceleration** | Same toggle as `Ctrl+Shift+G`. |
 
-Both toggles restart the app, and their menu labels say so. This is not a
+All three of the above restart the app, and their menu labels say so. This is not a
 shortcut worth apologising for — it is the only way it can work. WebView2 reads
 its command line exactly once, when the browser environment is created, and
 neither GPU use nor colour conversion is adjustable afterwards through any
@@ -74,7 +75,16 @@ sRGB, which makes the conversion a no-op and puts the original values on screen.
 On an ordinary sRGB monitor the two settings look identical. Leave it on unless
 you are colour-matching against another application.
 
-## Title bar and icon
+## Title, title bar and icon
+
+**The window title always follows the page.** Each window's caption is the
+page's own `document.title`, suffixed with "— DiffusionFrame" -- so it tracks
+ComfyUI's queue-progress percentage, a changed workflow name, or whatever else
+the page puts there, in every window including link windows. The backend name
+from the config is only a placeholder shown until the page announces its real
+title, at startup and briefly after switching backends. The main window's
+title still ends with `GPU off` / `unmanaged colour` when those are active,
+appended after the page's title rather than replacing it.
 
 **The window icon follows the page.** Each window adopts the favicon of
 whatever it is showing, so the ComfyUI window carries ComfyUI's icon and a link
@@ -99,6 +109,21 @@ ship with. Set `titlebar` to change it:
 Painting the caption needs Windows 11 (build 22000). On Windows 10 those calls
 fail harmlessly and only the dark-mode flag applies, which still gives you a
 dark caption — just not an exact colour match.
+
+## Fullscreen video
+
+A video's own fullscreen button (or pressing F on one) now fills the monitor,
+not just the window. WebView2 does not do this on its own -- by default it
+only expands an in-page fullscreen request to the webview's existing bounds,
+which from inside the window looks like nothing happened if the window
+wasn't already maximized. DiffusionFrame watches WebView2's
+`ContainsFullScreenElementChanged` event and resizes the OS window itself when
+it fires, the same borderless-fullscreen path `Ctrl+Shift+F` already used.
+
+If you had put the window into fullscreen yourself first and *then* fullscreen
+a video, leaving the video's fullscreen afterwards drops back to windowed
+rather than returning to your manual fullscreen -- a rare combination, and not
+worth a state stack to handle.
 
 ## Requirements
 

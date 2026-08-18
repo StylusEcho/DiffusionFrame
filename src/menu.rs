@@ -9,6 +9,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuCommand {
     Refresh,
+    ClearCacheAndRestart,
     ColourManagement,
     HardwareAcceleration,
 }
@@ -23,16 +24,18 @@ impl MenuCommand {
     const fn id(self) -> usize {
         match self {
             MenuCommand::Refresh => 0x0010,
-            MenuCommand::ColourManagement => 0x0020,
-            MenuCommand::HardwareAcceleration => 0x0030,
+            MenuCommand::ClearCacheAndRestart => 0x0020,
+            MenuCommand::ColourManagement => 0x0030,
+            MenuCommand::HardwareAcceleration => 0x0040,
         }
     }
 
     const fn from_id(id: usize) -> Option<Self> {
         match id {
             0x0010 => Some(MenuCommand::Refresh),
-            0x0020 => Some(MenuCommand::ColourManagement),
-            0x0030 => Some(MenuCommand::HardwareAcceleration),
+            0x0020 => Some(MenuCommand::ClearCacheAndRestart),
+            0x0030 => Some(MenuCommand::ColourManagement),
+            0x0040 => Some(MenuCommand::HardwareAcceleration),
             _ => None,
         }
     }
@@ -42,11 +45,12 @@ impl MenuCommand {
     fn label(self, enabled: bool) -> String {
         match self {
             MenuCommand::Refresh => "&Refresh page\tF5".to_string(),
+            MenuCommand::ClearCacheAndRestart => "Clear cache and restart\t(restarts)".to_string(),
             MenuCommand::ColourManagement => {
-                format!("{} colour management\t(restarts)", verb(enabled))
+                format!("{} Colour Management\t(restarts)", verb(enabled))
             }
             MenuCommand::HardwareAcceleration => {
-                format!("{} hardware acceleration\tCtrl+Shift+G", verb(enabled))
+                format!("{} Hardware Acceleration\tCtrl+Shift+G", verb(enabled))
             }
         }
     }
@@ -103,6 +107,7 @@ mod imp {
             let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
             for (command, enabled) in [
                 (MenuCommand::Refresh, false),
+                (MenuCommand::ClearCacheAndRestart, false),
                 (MenuCommand::ColourManagement, colour_management),
                 (MenuCommand::HardwareAcceleration, hardware_acceleration),
             ] {
@@ -159,6 +164,7 @@ mod tests {
     fn ids_round_trip() {
         for command in [
             MenuCommand::Refresh,
+            MenuCommand::ClearCacheAndRestart,
             MenuCommand::ColourManagement,
             MenuCommand::HardwareAcceleration,
         ] {
@@ -170,6 +176,7 @@ mod tests {
     fn ids_are_usable_as_wm_syscommand_parameters() {
         for command in [
             MenuCommand::Refresh,
+            MenuCommand::ClearCacheAndRestart,
             MenuCommand::ColourManagement,
             MenuCommand::HardwareAcceleration,
         ] {
@@ -197,6 +204,23 @@ mod tests {
             .starts_with("Enable"));
         // Both toggles need a restart; the label warns before the click.
         assert!(MenuCommand::ColourManagement
+            .label(true)
+            .contains("restarts"));
+    }
+
+    #[test]
+    fn toggle_labels_use_title_case_for_the_setting_name() {
+        assert!(MenuCommand::ColourManagement
+            .label(true)
+            .contains("Colour Management"));
+        assert!(MenuCommand::HardwareAcceleration
+            .label(true)
+            .contains("Hardware Acceleration"));
+    }
+
+    #[test]
+    fn clear_cache_warns_it_restarts_too() {
+        assert!(MenuCommand::ClearCacheAndRestart
             .label(true)
             .contains("restarts"));
     }
