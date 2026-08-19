@@ -497,14 +497,14 @@ fn handle_menu(
             }
         }
 
-        // Cache and site data are shared by every window through the common
-        // WebContext, so clearing from the main webview is enough regardless
-        // of which window's menu was used. The restart isn't strictly needed
-        // to see the effect, but a stale service worker or WASM module can
+        // Cache is shared by every window through the common WebContext, so
+        // clearing from the main webview is enough regardless of which
+        // window's menu was used. The restart isn't strictly needed to see
+        // the effect, but a stale service worker or WASM module can
         // otherwise stay resident in the renderer that served it -- catching
         // both is the point of this specific button.
         MenuCommand::ClearCacheAndRestart => {
-            let _ = main.webview.clear_all_browsing_data();
+            clear_cache(&main.webview);
             restart(&main.window, config);
         }
 
@@ -544,6 +544,51 @@ fn show_target(webview: &WebView, config: &Config) {
         ))
     };
 }
+
+/// Clear only cache-shaped data: the disk cache, the Cache Storage API, and
+/// stale service workers.
+///
+/// Deliberately narrower than [`WebView::clear_all_browsing_data`], which
+/// this button used before: "all browsing data" also means cookies, local
+/// storage and IndexedDB, and ComfyUI keeps its open tabs and workflow state
+/// in exactly those -- wiping them along with the cache silently threw that
+/// state away too. A menu item labelled "clear cache" should not sign you
+/// out and close your tabs as a side effect.
+#[cfg(windows)]
+fn clear_cache(webview: &WebView) {
+    use webview2_com::ClearBrowsingDataCompletedHandler;
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2Profile2, ICoreWebView2_13, COREWEBVIEW2_BROWSING_DATA_KINDS_CACHE_STORAGE,
+        COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE,
+        COREWEBVIEW2_BROWSING_DATA_KINDS_SERVICE_WORKERS,
+    };
+    use windows_core::Interface;
+    use wry::WebViewExtWindows;
+
+    let kinds = COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE
+        | COREWEBVIEW2_BROWSING_DATA_KINDS_CACHE_STORAGE
+        | COREWEBVIEW2_BROWSING_DATA_KINDS_SERVICE_WORKERS;
+
+    let profile = unsafe {
+        webview
+            .webview()
+            .cast::<ICoreWebView2_13>()
+            .and_then(|webview| webview.Profile())
+            .and_then(|profile| profile.cast::<ICoreWebView2Profile2>())
+    };
+
+    if let Ok(profile) = profile {
+        unsafe {
+            let _ = profile.ClearBrowsingData(
+                kinds,
+                &ClearBrowsingDataCompletedHandler::create(Box::new(move |_| Ok(()))),
+            );
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn clear_cache(_webview: &WebView) {}
 
 fn set_idle(webview: &WebView, idle: bool) {
     let _ = webview.set_visible(!idle);

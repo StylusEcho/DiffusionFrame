@@ -52,7 +52,7 @@ usual Move/Size/Close entries:
 | Item | |
 | --- | --- |
 | **Refresh page** | Reloads. On the main window it re-probes the backend first, so refreshing after a shutdown lands on the placeholder rather than a Chromium error page. |
-| **Clear cache and restart** | Wipes the webview's cache, cookies, storage and service workers, then restarts. Worth reaching for if a custom node's UI extension isn't showing up or is behaving like an old version of itself -- that is usually a stale cached script, not a real config problem. |
+| **Clear cache and restart** | Wipes the disk cache, the Cache Storage API and service workers, then restarts. Worth reaching for if a custom node's UI extension isn't showing up or is behaving like an old version of itself -- that is usually a stale cached script, not a real config problem. Deliberately leaves cookies, local storage and IndexedDB alone, since that is where ComfyUI keeps your open tabs and workflow state -- a button called "clear cache" should not sign you out. |
 | **Enable/Disable Colour Management** | Whether the webview converts page colours into your display's ICC profile. |
 | **Enable/Disable Hardware Acceleration** | Same toggle as `Ctrl+Shift+G`. |
 
