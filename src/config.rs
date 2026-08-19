@@ -305,7 +305,24 @@ fn parse_bool(value: &str, fallback: bool) -> bool {
     }
 }
 
+/// A `data` folder next to the executable opts into portable mode: config and
+/// browser storage both move there instead of `%APPDATA%`. Never created
+/// automatically -- only ever activated by a folder the user made themselves,
+/// so an existing install's behavior can't change out from under it.
+fn portable_data_dir() -> Option<PathBuf> {
+    portable_data_dir_for(std::env::current_exe().ok()?)
+}
+
+fn portable_data_dir_for(exe_path: PathBuf) -> Option<PathBuf> {
+    let candidate = exe_path.parent()?.join("data");
+    candidate.is_dir().then_some(candidate)
+}
+
 pub fn config_dir() -> PathBuf {
+    if let Some(portable) = portable_data_dir() {
+        return portable;
+    }
+
     #[cfg(windows)]
     let base = std::env::var_os("APPDATA").map(PathBuf::from);
     #[cfg(not(windows))]
@@ -330,6 +347,55 @@ pub fn webview_data_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A scratch directory unique to the calling test, so parallel test runs
+    /// never race on the same path.
+    fn scratch_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("diffusionframe-test-{name}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_data_folder_next_to_the_exe_is_detected() {
+        let root = scratch_dir("portable-yes");
+        fs::create_dir_all(root.join("data")).unwrap();
+        let exe = root.join("diffusionframe.exe");
+
+        assert_eq!(portable_data_dir_for(exe), Some(root.join("data")));
+    }
+
+    #[test]
+    fn no_data_folder_means_no_portable_mode() {
+        let root = scratch_dir("portable-no");
+        let exe = root.join("diffusionframe.exe");
+
+        assert_eq!(portable_data_dir_for(exe), None);
+    }
+
+    #[test]
+    fn a_file_named_data_does_not_opt_in() {
+        // A stray same-named file next to the exe must not be mistaken for
+        // the portable marker.
+        let root = scratch_dir("portable-file-not-dir");
+        fs::write(root.join("data"), b"not a directory").unwrap();
+        let exe = root.join("diffusionframe.exe");
+
+        assert_eq!(portable_data_dir_for(exe), None);
+    }
+
+    #[test]
+    fn the_data_folder_is_relative_to_the_exe_not_the_working_directory() {
+        let root = scratch_dir("portable-relative-to-exe");
+        fs::create_dir_all(root.join("subdir")).unwrap();
+        fs::create_dir_all(root.join("data")).unwrap();
+        // A "data" folder next to the exe's *containing* directory, one level
+        // up from where the exe actually lives, must not count.
+        let exe = root.join("subdir").join("diffusionframe.exe");
+
+        assert_eq!(portable_data_dir_for(exe), None);
+    }
 
     #[test]
     fn settings_survive_a_save_load_round_trip() {

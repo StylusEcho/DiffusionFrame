@@ -234,6 +234,27 @@ DiffusionFrame running at once with *different* acceleration settings will
 conflict over that folder, and the second one will report that it can't start.
 Two copies with the same setting are fine.
 
+## Portable mode
+
+Create a folder named `data` next to `diffusionframe.exe` and DiffusionFrame
+stops using `%APPDATA%` entirely: `config.txt` and the `webview2` profile both
+move under `data\` instead, so the whole app — settings, open tabs, logins —
+lives in one self-contained folder you can move, copy to another machine, or
+put on a USB stick.
+
+Nothing is created automatically; the folder has to exist before you launch
+the app for portable mode to take effect. This is deliberate — an app that
+silently changed where your data lives would be exactly the kind of surprise
+this project has already had to fix once (an earlier version of the cache-clear
+button wiped ComfyUI's open tabs without warning). Creating
+`data` is an explicit choice, and removing it reverts to `%APPDATA%` on the
+next launch.
+
+There's no migration between the two: switching modes starts fresh rather than
+copying existing state over. If you want to take your current settings and
+tabs with you, copy `%APPDATA%\DiffusionFrame`'s contents into the `data`
+folder yourself before the first portable launch.
+
 ## The icon
 
 DiffusionFrame's own icon — the executable's icon in Explorer, and the fallback
